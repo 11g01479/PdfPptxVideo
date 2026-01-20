@@ -157,7 +157,7 @@ const App: React.FC = () => {
       }
 
       setAppState({ status: 'analyzing', progress: 40 });
-      setLoadingMsg("AIがドキュメントを詳細に読み取っています...\n(混雑時は数秒かかる場合があります)");
+      setLoadingMsg("AIがドキュメントを読み取っています...");
 
       const base64 = await new Promise<string>((resolve) => {
         const reader = new FileReader();
@@ -190,14 +190,15 @@ const App: React.FC = () => {
       const slidesWithAudio = [...analysis.slides];
       
       for (let i = 0; i < slidesWithAudio.length; i++) {
-        setLoadingMsg(`音声素材を生成中... (${i + 1}/${slidesWithAudio.length})\n(AIが混み合っている場合は自動でリトライします)`);
+        setLoadingMsg(`音声素材を生成中... (${i + 1}/${slidesWithAudio.length})\n※Google APIの無料制限回避のため時間がかかる場合があります`);
         try {
           slidesWithAudio[i].audioBuffer = await generateSpeechForText(slidesWithAudio[i].notes, audioCtx);
         } catch (err: any) {
-          // callWithRetry内でリトライが尽きた場合や致命的なエラーの場合
           throw err;
         }
         setAppState(prev => ({ ...prev, progress: Math.floor(((i + 1) / slidesWithAudio.length) * 50) }));
+        // 無料枠のRate Limitを考慮して少し間隔をあける
+        await new Promise(r => setTimeout(r, 2000));
       }
 
       setAppState({ status: 'video_recording', progress: 50 });
@@ -284,6 +285,7 @@ const App: React.FC = () => {
                 <span className="text-slate-300 font-bold text-lg z-10">{file ? file.name : "PDFまたはPowerPointを選択"}</span>
                 <input type="file" className="hidden" accept=".pdf,.pptx" onChange={handleFileUpload} />
               </label>
+              <p className="mt-4 text-xs text-slate-500">※Gemini APIの無料枠制限により、スライド数が多いと生成に失敗する場合があります。</p>
               {file && appState.status === 'idle' && (
                 <button onClick={startAnalysis} className="mt-8 px-10 py-4 bg-cyan-600 hover:bg-cyan-500 text-white font-black rounded-xl shadow-xl transition-all transform hover:scale-105 active:scale-95">
                   AI解析を開始
@@ -312,7 +314,7 @@ const App: React.FC = () => {
                   {analysis.slides.map((slide, idx) => (
                     <div key={idx} className="bg-slate-800/40 p-6 rounded-2xl border border-slate-700/50 flex flex-col md:flex-row gap-6">
                       <div className="w-full md:w-64 shrink-0 aspect-video bg-black rounded-lg overflow-hidden border border-slate-700">
-                        {slide.imageUrl ? <img src={slide.imageUrl} alt="" className="w-full h-full object-contain" /> : <div className="w-full h-full flex items-center justify-center text-xs text-slate-600 bg-slate-900">PREVIEW ERROR</div>}
+                        {slide.imageUrl ? <img src={slide.imageUrl} alt="" className="w-full h-full object-contain" /> : <div className="w-full h-full flex items-center justify-center text-xs text-slate-600 bg-slate-900">PREVIEW</div>}
                       </div>
                       <div className="flex-1 space-y-4">
                         <div className="flex justify-between items-center">
@@ -324,7 +326,6 @@ const App: React.FC = () => {
                           className="w-full bg-slate-950 border border-slate-700 rounded-lg p-4 text-sm text-slate-300 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all outline-none min-h-[120px] resize-none"
                           value={slide.notes}
                           onChange={(e) => handleNoteChange(idx, e.target.value)}
-                          placeholder="ここに解説文を入力してください..."
                         />
                       </div>
                     </div>
@@ -350,8 +351,7 @@ const App: React.FC = () => {
                 <div className="w-full max-w-3xl aspect-video rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-900 bg-black mb-8">
                   <video src={videoUrl} controls className="w-full h-full object-contain" />
                 </div>
-                <a href={videoUrl} download="ai_presentation.webm" className="px-12 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl shadow-xl transition-all flex items-center gap-3">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                <a href={videoUrl} download="presentation_video.webm" className="px-12 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl shadow-xl transition-all flex items-center gap-3">
                   ダウンロード
                 </a>
               </div>
@@ -364,12 +364,22 @@ const App: React.FC = () => {
       {appState.status === 'error' && (
         <div className="fixed inset-0 bg-black/90 flex items-center justify-center p-6 z-50">
           <div className="bg-slate-900 p-8 rounded-3xl border border-red-500/30 text-center max-w-lg w-full">
-            <h2 className="text-2xl font-black mb-4 text-white">エラーが発生しました</h2>
-            <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl mb-8">
+            <h2 className="text-2xl font-black mb-4 text-white">処理が中断されました</h2>
+            <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl mb-6">
               <p className="text-red-400 text-sm break-words leading-relaxed">{appState.error}</p>
             </div>
-            <button onClick={() => window.location.reload()} className="w-full py-4 bg-red-600 hover:bg-red-500 text-white font-black rounded-xl transition-colors">
-              もう一度やり直す
+            {appState.error?.includes("制限") && (
+              <div className="text-left bg-slate-800/50 p-4 rounded-xl mb-8 text-xs text-slate-400 space-y-2">
+                <p>💡 解決のヒント:</p>
+                <ul className="list-disc list-inside">
+                  <li>スライドの枚数を10枚以下に減らしてください。</li>
+                  <li>Gemini APIの無料枠制限によるものです。数分〜数時間あけて再試行してください。</li>
+                  <li>有料のGoogle AI Studio APIキーを設定すると制限を回避できます。</li>
+                </ul>
+              </div>
+            )}
+            <button onClick={() => window.location.reload()} className="w-full py-4 bg-slate-700 hover:bg-slate-600 text-white font-black rounded-xl transition-colors">
+              トップに戻る
             </button>
           </div>
         </div>

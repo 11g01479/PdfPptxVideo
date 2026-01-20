@@ -9,36 +9,48 @@ const getAIClient = () => {
 
 /**
  * 指数バックオフ付きのリトライ関数
- * 503 (Overloaded) や 429 (Rate Limit) などの一時的なエラーを自動でリトライします。
+ * 429 (Quota Exceeded) や 503 (Overloaded) の際に再試行します。
  */
 const callWithRetry = async (fn: () => Promise<any>, maxRetries = 5): Promise<any> => {
-  let delay = 2000;
+  let delay = 3000;
   for (let i = 0; i < maxRetries; i++) {
     try {
       const result = await fn();
-      if (!result) throw new Error("AIから空の応答が返されました。");
       return result;
     } catch (error: any) {
-      const errorMsg = error?.message || "";
-      const isOverloaded = errorMsg.includes("503") || errorMsg.toLowerCase().includes("overloaded") || errorMsg.includes("UNAVAILABLE");
-      const isRateLimited = errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota");
+      const rawError = error?.message || "";
+      let errorDetail = "";
       
-      // 最後のリトライでなければ待機して継続
-      if ((isOverloaded || isRateLimited) && i < maxRetries - 1) {
-        console.warn(`Gemini API Busy (${i + 1}/${maxRetries}): ${errorMsg}. Retrying in ${delay}ms...`);
-        // UI側でこの待機を検知できるようにするため、特定のフラグを持つエラーを投げ直すことも検討できますが、
-        // ここでは単純にawaitで待機します。
-        await new Promise(r => setTimeout(r, delay));
-        delay *= 2; 
-        continue;
-      }
-      
-      // 安全フィルターなどによるブロックの場合
-      if (errorMsg.includes("SAFETY")) {
-        throw new Error("コンテンツがAIの安全ポリシーによりブロックされました。内容を変更して試してください。");
+      try {
+        // JSON形式のエラーメッセージをパースして詳細を取得
+        const parsed = JSON.parse(rawError.substring(rawError.indexOf('{')));
+        errorDetail = parsed?.error?.message || "";
+      } catch (e) {
+        errorDetail = rawError;
       }
 
-      throw new Error(`AI解析エラー: ${errorMsg || "不明なエラーが発生しました。"}`);
+      const isQuotaExceeded = errorDetail.includes("quota") || errorDetail.includes("429") || errorDetail.includes("RESOURCE_EXHAUSTED");
+      const isOverloaded = errorDetail.includes("503") || errorDetail.includes("overloaded") || errorDetail.includes("UNAVAILABLE");
+
+      // 一時的な過負荷(503)の場合はリトライ
+      if (isOverloaded && i < maxRetries - 1) {
+        console.warn(`AI model overloaded. Retrying... (${i + 1}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, delay));
+        delay *= 2;
+        continue;
+      }
+
+      // クォータ制限(429)の場合
+      if (isQuotaExceeded) {
+        throw new Error("Gemini APIの利用制限（無料枠の上限）に達しました。1日あたりのリクエスト数または短時間の頻度が上限を超えています。しばらく時間をおいてから再度お試しください。");
+      }
+
+      // 安全フィルター
+      if (errorDetail.includes("SAFETY")) {
+        throw new Error("コンテンツがAIの安全ポリシーによりブロックされました。");
+      }
+
+      throw new Error(`AI解析エラー: ${errorDetail || "不明なエラーが発生しました。"}`);
     }
   }
 };
@@ -89,7 +101,7 @@ export const generateSpeechForText = async (text: string, audioCtx: AudioContext
   }));
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("音声データの生成に失敗しました。AIの安全フィルターによって制限された可能性があります。");
+  if (!base64Audio) throw new Error("音声データの生成に失敗しました。");
 
   const audioBytes = decode(base64Audio);
   return await decodeAudioData(audioBytes, audioCtx, 24000, 1);
@@ -131,17 +143,16 @@ ${pageCount ? `【想定ページ数】: ${pageCount}ページ` : ''}
 1. ドキュメントの内容を論理的なスライド構成に分解してください。
 2. 各スライドに対して、目を引く「タイトル」と、視聴者に語りかけるような丁寧な「解説（スピーカーノート）」を作成してください。
 3. 既存のノートがある場合はそれを最大限尊重しつつ、動画として聞き取りやすい言葉にブラッシュアップしてください。
-4. 解説文は、そのまま読み上げるだけで解説動画として成立するように作成してください。
 
 以下のJSONフォーマットで回答してください：
 {
-  "presentationTitle": "ドキュメント全体の包括的なタイトル",
-  "summary": "内容全体の簡潔なサマリー",
+  "presentationTitle": "タイトル",
+  "summary": "サマリー",
   "slides": [
     {
       "pageIndex": 0,
       "title": "スライドタイトル",
-      "notes": "このスライドの読み上げ解説文（スピーカーノート）"
+      "notes": "このスライドの読み上げ解説文"
     }
   ]
 }`;
@@ -177,15 +188,7 @@ ${pageCount ? `【想定ページ数】: ${pageCount}ページ` : ''}
   }));
 
   const text = response.text;
-  if (!text) {
-    throw new Error("AIから有効なテキスト回答が得られませんでした。");
-  }
+  if (!text) throw new Error("AIから回答が得られませんでした。");
 
-  try {
-    const result: AnalysisResult = JSON.parse(text);
-    result.slides.sort((a, b) => a.pageIndex - b.pageIndex);
-    return result;
-  } catch (e) {
-    throw new Error("AIの回答フォーマット（JSON）が不正です。もう一度お試しください。");
-  }
+  return JSON.parse(text);
 };
