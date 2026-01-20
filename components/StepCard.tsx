@@ -11,22 +11,24 @@ interface StepCardProps {
 
 const StepCard: React.FC<StepCardProps> = ({ number, title, children, active, completed }) => {
   return (
-    <div className={`transition-all duration-500 rounded-2xl p-6 mb-6 border ${
+    <div className={`transition-all duration-500 rounded-3xl p-8 mb-6 border ${
       active 
-        ? 'bg-slate-800/50 border-blue-500 shadow-lg shadow-blue-500/20' 
+        ? 'bg-slate-800/40 border-cyan-500 shadow-2xl shadow-cyan-500/10' 
         : completed 
-          ? 'bg-slate-900/50 border-green-500/30 opacity-80'
-          : 'bg-slate-900/30 border-slate-700/50 opacity-50 grayscale pointer-events-none'
+          ? 'bg-slate-900/50 border-emerald-500/30 opacity-100'
+          : 'bg-slate-900/20 border-slate-800 opacity-40 grayscale pointer-events-none'
     }`}>
-      <div className="flex items-center gap-4 mb-6">
-        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg ${
-          completed ? 'bg-green-500 text-white' : active ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-400'
+      <div className="flex items-center gap-5 mb-8">
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-xl transition-all ${
+          completed ? 'bg-emerald-500 text-white rotate-12' : active ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/50' : 'bg-slate-700 text-slate-400'
         }`}>
           {completed ? '✓' : number}
         </div>
-        <h3 className="text-xl font-semibold">{title}</h3>
+        <h3 className="text-2xl font-black tracking-tight">{title}</h3>
       </div>
-      {children}
+      <div className={active ? 'animate-in fade-in slide-in-from-bottom-2 duration-700' : ''}>
+        {children}
+      </div>
     </div>
   );
 };

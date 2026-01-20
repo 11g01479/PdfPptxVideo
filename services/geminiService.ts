@@ -1,14 +1,12 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { AnalysisResult, ModelName } from "../types";
+import { PptxContent } from "./pptxParser";
 
-// Always use the required initialization format as per @google/genai coding guidelines.
-// This ensures the API key is obtained directly from process.env.API_KEY.
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-// Base64デコード
 function decode(base64: string) {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -19,7 +17,6 @@ function decode(base64: string) {
   return bytes;
 }
 
-// PCMデータをAudioBufferに変換
 async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
@@ -55,23 +52,50 @@ export const generateSpeechForText = async (text: string, audioCtx: AudioContext
   });
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("音声データの生成に失敗しました。APIキーが正しく設定されているか確認してください。");
+  if (!base64Audio) throw new Error("音声データの生成に失敗しました。");
 
   const audioBytes = decode(base64Audio);
   return await decodeAudioData(audioBytes, audioCtx, 24000, 1);
 };
 
-export const analyzePdfForPpt = async (base64Pdf: string, pageCount: number): Promise<AnalysisResult> => {
+export const analyzeDocument = async (
+  base64Data: string, 
+  mimeType: string, 
+  pageCount?: number,
+  pptxContent?: PptxContent
+): Promise<AnalysisResult> => {
   const ai = getAIClient();
   
-  const prompt = `このPDFドキュメントをページごとに詳細に分析してください。
-【総ページ数】: ${pageCount}ページ
+  let contentPart: any;
+  let systemContext = "";
+
+  if (mimeType === 'application/pdf') {
+    contentPart = {
+      inlineData: {
+        mimeType: mimeType,
+        data: base64Data
+      }
+    };
+    systemContext = "このPDFドキュメントを詳細に分析してください。";
+  } else {
+    // PPTXの場合は抽出されたテキストデータをコンテキストとして渡す
+    const pptxText = pptxContent?.slides.map(s => 
+      `Slide ${s.index + 1}:\n[Text on Slide]: ${s.text}\n[Original Speaker Notes]: ${s.notes}`
+    ).join('\n\n---\n\n');
+    
+    contentPart = { text: `以下はPowerPointファイルから抽出された内容です：\n\n${pptxText}` };
+    systemContext = "提供されたPowerPointのテキストと既存のノートを元に、より自然で分かりやすい解説動画用スクリプトを作成してください。";
+  }
+
+  const prompt = `
+${systemContext}
+${pageCount ? `【想定ページ数】: ${pageCount}ページ` : ''}
 
 【指示内容】
-1. PDFの全 ${pageCount} ページを1枚ずつのスライドとして構成してください。
-2. 各ページに対して、その内容に基づいた「スライドタイトル」と、詳細な「解説（スピーカーノート）」を作成してください。
-3. ページ番号（pageIndex: 0 から ${pageCount - 1} まで）を一切飛ばさず、全てのページを含めてください。
-4. スピーカーノートには、そのページで説明すべき要点や発表用のスクリプトを、聴衆が理解しやすい丁寧な日本語で記述してください。
+1. ドキュメントの内容を論理的なスライド構成に分解してください。
+2. 各スライドに対して、目を引く「タイトル」と、視聴者に語りかけるような丁寧な「解説（スピーカーノート）」を作成してください。
+3. 既存のノートがある場合はそれを最大限尊重しつつ、動画として聞き取りやすい言葉にブラッシュアップしてください。
+4. 解説文は、そのまま読み上げるだけで解説動画として成立するように作成してください。
 
 以下のJSONフォーマットで回答してください：
 {
@@ -80,8 +104,8 @@ export const analyzePdfForPpt = async (base64Pdf: string, pageCount: number): Pr
   "slides": [
     {
       "pageIndex": 0,
-      "title": "1ページ目の内容を要約したタイトル",
-      "notes": "このページで発表者が読み上げるべき詳細な解説文（スピーカーノート）"
+      "title": "スライドタイトル",
+      "notes": "このスライドの読み上げ解説文（スピーカーノート）"
     }
   ]
 }`;
@@ -89,15 +113,7 @@ export const analyzePdfForPpt = async (base64Pdf: string, pageCount: number): Pr
   const response = await ai.models.generateContent({
     model: ModelName.TEXT,
     contents: {
-      parts: [
-        {
-          inlineData: {
-            mimeType: "application/pdf",
-            data: base64Pdf
-          }
-        },
-        { text: prompt }
-      ]
+      parts: [contentPart, { text: prompt }]
     },
     config: {
       responseMimeType: "application/json",
@@ -125,9 +141,7 @@ export const analyzePdfForPpt = async (base64Pdf: string, pageCount: number): Pr
   });
 
   const text = response.text;
-  if (!text) {
-    throw new Error("AIから有効な解析結果が得られませんでした。APIキーの設定を確認してください。");
-  }
+  if (!text) throw new Error("AI解析に失敗しました。");
 
   const result: AnalysisResult = JSON.parse(text);
   result.slides.sort((a, b) => a.pageIndex - b.pageIndex);
