@@ -7,6 +7,27 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
+// 指数バックオフ付きのリトライ関数
+const callWithRetry = async (fn: () => Promise<any>, maxRetries = 3): Promise<any> => {
+  let delay = 2000;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const isOverloaded = error?.message?.includes("503") || error?.message?.includes("overloaded");
+      const isRateLimited = error?.message?.includes("429");
+      
+      if ((isOverloaded || isRateLimited) && i < maxRetries - 1) {
+        console.warn(`AI model busy. Retrying in ${delay}ms... (Attempt ${i + 1}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, delay));
+        delay *= 2; // 待ち時間を倍にする
+        continue;
+      }
+      throw error;
+    }
+  }
+};
+
 function decode(base64: string) {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -38,7 +59,8 @@ async function decodeAudioData(
 
 export const generateSpeechForText = async (text: string, audioCtx: AudioContext): Promise<AudioBuffer> => {
   const ai = getAIClient();
-  const response = await ai.models.generateContent({
+  
+  const response = await callWithRetry(() => ai.models.generateContent({
     model: ModelName.TTS,
     contents: [{ parts: [{ text: `落ち着いたトーンで丁寧に読み上げてください： ${text}` }] }],
     config: {
@@ -49,7 +71,7 @@ export const generateSpeechForText = async (text: string, audioCtx: AudioContext
         },
       },
     },
-  });
+  }));
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   if (!base64Audio) throw new Error("音声データの生成に失敗しました。");
@@ -78,7 +100,6 @@ export const analyzeDocument = async (
     };
     systemContext = "このPDFドキュメントを詳細に分析してください。";
   } else {
-    // PPTXの場合は抽出されたテキストデータをコンテキストとして渡す
     const pptxText = pptxContent?.slides.map(s => 
       `Slide ${s.index + 1}:\n[Text on Slide]: ${s.text}\n[Original Speaker Notes]: ${s.notes}`
     ).join('\n\n---\n\n');
@@ -110,7 +131,7 @@ ${pageCount ? `【想定ページ数】: ${pageCount}ページ` : ''}
   ]
 }`;
 
-  const response = await ai.models.generateContent({
+  const response = await callWithRetry(() => ai.models.generateContent({
     model: ModelName.TEXT,
     contents: {
       parts: [contentPart, { text: prompt }]
@@ -138,7 +159,7 @@ ${pageCount ? `【想定ページ数】: ${pageCount}ページ` : ''}
         required: ["presentationTitle", "summary", "slides"]
       }
     }
-  });
+  }));
 
   const text = response.text;
   if (!text) throw new Error("AI解析に失敗しました。");

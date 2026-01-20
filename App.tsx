@@ -94,10 +94,7 @@ const App: React.FC = () => {
 
     for (const slide of content.slides) {
       // 1. 背景描画
-      const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-      gradient.addColorStop(0, '#1e293b');
-      gradient.addColorStop(1, '#0f172a');
-      ctx.fillStyle = gradient;
+      ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // 2. 抽出された画像がある場合はそれを描画
@@ -105,26 +102,22 @@ const App: React.FC = () => {
         await new Promise((resolve) => {
           const img = new Image();
           img.onload = () => {
-            const ratio = Math.min((canvas.width - 100) / img.width, (canvas.height - 100) / img.height);
+            const ratio = Math.min(canvas.width / img.width, canvas.height / img.height);
             const nw = img.width * ratio, nh = img.height * ratio;
             ctx.drawImage(img, (canvas.width - nw) / 2, (canvas.height - nh) / 2, nw, nh);
             resolve(null);
           };
+          img.onerror = () => resolve(null); // エラー時も続行
           img.src = slide.image!;
         });
       }
 
-      // 3. テキストオーバーレイ (装飾的に)
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.3)';
-      ctx.lineWidth = 10;
-      ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
-
+      // 3. テキスト情報を重畳（画像がない場合のみ目立たせる）
       if (!slide.image) {
-        // 画像がない場合のみテキストを大きく中央表示
         ctx.fillStyle = '#f8fafc';
         ctx.font = 'bold 50px sans-serif';
         ctx.textAlign = 'center';
-        const title = slide.text.split(' ')[0] || `Slide ${slide.index + 1}`;
+        const title = slide.text.split('\n')[0] || `Slide ${slide.index + 1}`;
         ctx.fillText(title.slice(0, 30), canvas.width / 2, 180);
 
         ctx.fillStyle = '#94a3b8';
@@ -133,6 +126,14 @@ const App: React.FC = () => {
         lines.slice(0, 8).forEach((line, i) => {
           ctx.fillText(line, canvas.width / 2, 280 + (i * 40));
         });
+      } else {
+        // 画像がある場合、上部に半透明の帯でタイトルを入れる
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+        ctx.fillRect(0, 0, canvas.width, 60);
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 24px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(`Slide ${slide.index + 1}`, 30, 40);
       }
 
       images.push(canvas.toDataURL('image/jpeg', 0.8));
@@ -196,9 +197,9 @@ const App: React.FC = () => {
         try {
           slidesWithAudio[i].audioBuffer = await generateSpeechForText(slidesWithAudio[i].notes, audioCtx);
         } catch (err: any) {
-          if (err.message.includes("429")) {
-            for (let countdown = 15; countdown > 0; countdown--) {
-              setLoadingMsg(`AI制限回避のため待機中... 残り ${countdown} 秒`);
+          if (err.message.includes("429") || err.message.includes("503")) {
+            for (let countdown = 10; countdown > 0; countdown--) {
+              setLoadingMsg(`モデル過負荷のため待機中... 残り ${countdown} 秒`);
               await new Promise(r => setTimeout(r, 1000));
             }
             i--; continue;
@@ -206,7 +207,6 @@ const App: React.FC = () => {
           throw err;
         }
         setAppState(prev => ({ ...prev, progress: Math.floor(((i + 1) / slidesWithAudio.length) * 50) }));
-        await new Promise(r => setTimeout(r, 1500));
       }
 
       setAppState({ status: 'video_recording', progress: 50 });
@@ -236,9 +236,9 @@ const App: React.FC = () => {
       recorder.start();
       for (let i = 0; i < slidesWithAudio.length; i++) {
         const slide = slidesWithAudio[i];
-        setLoadingMsg(`録画中: ${i + 1} / ${slidesWithAudio.length} スライド`);
+        setLoadingMsg(`動画エンコード中: ${i + 1} / ${slidesWithAudio.length} スライド`);
         const duration = slide.audioBuffer!.duration;
-        const endTime = Date.now() + (duration * 1000) + 500;
+        const endTime = Date.now() + (duration * 1000) + 300;
         
         const source = audioCtx.createBufferSource();
         source.buffer = slide.audioBuffer!;
@@ -374,7 +374,7 @@ const App: React.FC = () => {
           <div className="bg-slate-900 p-8 rounded-3xl border border-red-500/30 text-center max-w-md w-full">
             <h2 className="text-2xl font-black mb-4 text-white">エラーが発生しました</h2>
             <p className="text-slate-400 mb-8 text-sm">{appState.error}</p>
-            <button onClick={() => window.location.reload()} className="w-full py-4 bg-red-600 text-white font-black rounded-xl">再開する</button>
+            <button onClick={() => window.location.reload()} className="w-full py-4 bg-red-600 text-white font-black rounded-xl">再試行する</button>
           </div>
         </div>
       )}

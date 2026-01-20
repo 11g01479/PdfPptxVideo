@@ -8,22 +8,23 @@ export const createPresentation = async (data: AnalysisResult): Promise<void> =>
 
   // Title Slide
   const titleSlide = pres.addSlide();
-  titleSlide.background = { color: "1E293B" };
+  titleSlide.background = { color: "0F172A" };
   titleSlide.addText(data.presentationTitle, {
     x: 0, y: 2.2, w: "100%", h: 1,
     align: "center", fontSize: 40, color: "38BDF8", bold: true
   });
-  titleSlide.addText("AI Generated Speaker Notes from PDF Content", {
-    x: 0, y: 3.2, w: "100%", h: 0.5,
-    align: "center", fontSize: 20, color: "94A3B8"
+  titleSlide.addText(data.summary, {
+    x: 1, y: 3.5, w: 8, h: 1.5,
+    align: "center", fontSize: 16, color: "94A3B8"
   });
 
   // Page-by-Page Slides
   data.slides.forEach((slide) => {
     const s = pres.addSlide();
     
-    // Original PDF Page as full-content image
+    // スライド画像が生成されている場合はそれを全面に配置
     if (slide.imageUrl) {
+      // DataURL形式でも安全に扱えるように指定
       s.addImage({
         data: slide.imageUrl,
         x: 0,
@@ -32,20 +33,19 @@ export const createPresentation = async (data: AnalysisResult): Promise<void> =>
         h: "100%",
         sizing: { type: 'contain', w: 10, h: 5.625 }
       });
+    } else {
+      s.background = { color: "1E293B" };
+      s.addText(slide.title, {
+        x: 0, y: 2, w: "100%", h: 1,
+        align: "center", fontSize: 32, color: "FFFFFF", bold: true
+      });
     }
 
-    // Add Slide Title (Optional overlay for accessibility)
-    s.addText(slide.title, {
-      x: 0.2, y: 0.1, w: 9.6, h: 0.4,
-      fontSize: 12, color: "FFFFFF", bold: true, align: 'left',
-      fill: { color: '0F172A', transparency: 60 }
-    });
-
-    // CRITICAL: Put the AI analysis into Speaker Notes
+    // スピーカーノートにAI生成の解説を追加
     s.addNotes(slide.notes);
   });
 
-  // Save the presentation
+  // ファイル保存
   const safeName = data.presentationTitle.replace(/[/\\?%*:|"<>]/g, '-');
   await pres.writeFile({ fileName: `${safeName}.pptx` });
 };
