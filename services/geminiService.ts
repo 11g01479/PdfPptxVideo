@@ -2,6 +2,8 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { AnalysisResult, ModelName } from "../types";
 
+// Always use the required initialization format as per @google/genai coding guidelines.
+// This ensures the API key is obtained directly from process.env.API_KEY.
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
@@ -53,7 +55,7 @@ export const generateSpeechForText = async (text: string, audioCtx: AudioContext
   });
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("音声データの生成に失敗しました。");
+  if (!base64Audio) throw new Error("音声データの生成に失敗しました。APIキーが正しく設定されているか確認してください。");
 
   const audioBytes = decode(base64Audio);
   return await decodeAudioData(audioBytes, audioCtx, 24000, 1);
@@ -124,7 +126,7 @@ export const analyzePdfForPpt = async (base64Pdf: string, pageCount: number): Pr
 
   const text = response.text;
   if (!text) {
-    throw new Error("AIから有効な解析結果が得られませんでした。");
+    throw new Error("AIから有効な解析結果が得られませんでした。APIキーの設定を確認してください。");
   }
 
   const result: AnalysisResult = JSON.parse(text);
