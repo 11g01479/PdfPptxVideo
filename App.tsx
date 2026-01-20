@@ -6,6 +6,7 @@ import { createPresentation } from './services/pptxService';
 import { AnalysisResult, AppState, Slide } from './types';
 import StepCard from './components/StepCard';
 
+// Worker URLを ESM 形式に合わせる
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
 
 const DAILY_LIMIT = 3; // 1日の無料生成上限
@@ -20,7 +21,6 @@ const App: React.FC = () => {
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // 利用回数管理の初期化
   useEffect(() => {
     const checkQuota = () => {
       const today = new Date().toISOString().split('T')[0];
@@ -125,11 +125,24 @@ const App: React.FC = () => {
       const preloadedImages: HTMLImageElement[] = [];
       const slidesWithAudio = [...analysis.slides];
       
-      // 画像と音声を全ページ分プリロード
       for (let i = 0; i < slidesWithAudio.length; i++) {
-        setLoadingMsg(`素材を準備中... (${i + 1}/${slidesWithAudio.length})`);
-        slidesWithAudio[i].audioBuffer = await generateSpeechForText(slidesWithAudio[i].notes, audioCtx);
+        setLoadingMsg(`音声素材を生成中... (${i + 1}/${slidesWithAudio.length})\n※無料枠制限のため、数秒ごとに処理しています...`);
         
+        try {
+          slidesWithAudio[i].audioBuffer = await generateSpeechForText(slidesWithAudio[i].notes, audioCtx);
+        } catch (err: any) {
+          // レート制限(429)に達した場合のリトライロジック
+          if (err.message.includes("429") || err.message.toLowerCase().includes("quota")) {
+            for (let countdown = 20; countdown > 0; countdown--) {
+              setLoadingMsg(`AIの利用制限に達しました。回避のため待機中... 残り ${countdown} 秒`);
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            i--; // 同じインデックスでやり直し
+            continue;
+          }
+          throw err;
+        }
+
         const img = new Image();
         img.src = slidesWithAudio[i].imageUrl!;
         await new Promise((resolve, reject) => {
@@ -139,6 +152,9 @@ const App: React.FC = () => {
         preloadedImages.push(img);
         
         setAppState(prev => ({ ...prev, progress: Math.floor(((i + 1) / slidesWithAudio.length) * 50) }));
+        
+        // 連続リクエストを避けるための短い猶予（1分3回制限が厳しいため）
+        await new Promise(r => setTimeout(r, 2000));
       }
 
       setAppState({ status: 'video_recording', progress: 50 });
@@ -173,11 +189,9 @@ const App: React.FC = () => {
         ctx.drawImage(img, (canvas.width - nw) / 2, (canvas.height - nh) / 2, nw, nh);
       };
 
-      // 録画開始の準備: 1ページ目を事前に描画
       drawFrame(preloadedImages[0]);
       recorder.start();
       
-      // 【重要】MediaRecorderが安定するまで待機し、再度1枚目を描画する（1ページ目欠損の防止）
       await new Promise(r => setTimeout(r, 400));
       drawFrame(preloadedImages[0]);
 
@@ -196,7 +210,6 @@ const App: React.FC = () => {
         source.connect(audioCtx.destination);
         source.start();
 
-        // 各ページ表示中はフレームを更新し続けてドロップを防止
         while (Date.now() < endTime) {
           drawFrame(img);
           await new Promise(r => requestAnimationFrame(r));
@@ -210,7 +223,6 @@ const App: React.FC = () => {
       recorder.stop();
       const videoBlob = await recordingPromise;
       
-      // 成功時に利用枠を1つ消費
       useQuota();
       
       setVideoUrl(URL.createObjectURL(videoBlob));
@@ -276,7 +288,7 @@ const App: React.FC = () => {
             {['rendering', 'analyzing', 'audio_generating', 'video_recording'].includes(appState.status) ? (
               <div className="flex flex-col items-center py-16 text-center">
                 <div className="w-20 h-20 border-4 border-slate-800 border-t-cyan-500 rounded-full animate-spin mb-8"></div>
-                <p className="text-2xl font-bold mb-4 tracking-tight text-white">{loadingMsg}</p>
+                <p className="text-2xl font-bold mb-4 tracking-tight text-white whitespace-pre-line">{loadingMsg}</p>
                 <div className="w-full max-w-md bg-slate-800 h-3 rounded-full overflow-hidden shadow-inner">
                   <div className="bg-gradient-to-r from-cyan-500 to-blue-600 h-full transition-all duration-500 ease-out" style={{ width: `${appState.progress}%` }}></div>
                 </div>
