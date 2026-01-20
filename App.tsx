@@ -93,11 +93,9 @@ const App: React.FC = () => {
     const ctx = canvas.getContext('2d')!;
 
     for (const slide of content.slides) {
-      // 1. 背景描画
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // 2. 抽出された画像がある場合はそれを描画
       if (slide.image) {
         await new Promise((resolve) => {
           const img = new Image();
@@ -107,12 +105,11 @@ const App: React.FC = () => {
             ctx.drawImage(img, (canvas.width - nw) / 2, (canvas.height - nh) / 2, nw, nh);
             resolve(null);
           };
-          img.onerror = () => resolve(null); // エラー時も続行
+          img.onerror = () => resolve(null);
           img.src = slide.image!;
         });
       }
 
-      // 3. テキスト情報を重畳（画像がない場合のみ目立たせる）
       if (!slide.image) {
         ctx.fillStyle = '#f8fafc';
         ctx.font = 'bold 50px sans-serif';
@@ -127,7 +124,6 @@ const App: React.FC = () => {
           ctx.fillText(line, canvas.width / 2, 280 + (i * 40));
         });
       } else {
-        // 画像がある場合、上部に半透明の帯でタイトルを入れる
         ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
         ctx.fillRect(0, 0, canvas.width, 60);
         ctx.fillStyle = '#38bdf8';
@@ -161,7 +157,7 @@ const App: React.FC = () => {
       }
 
       setAppState({ status: 'analyzing', progress: 40 });
-      setLoadingMsg("AIがドキュメントを詳細に読み取っています...");
+      setLoadingMsg("AIがドキュメントを詳細に読み取っています...\n(混雑時は数秒かかる場合があります)");
 
       const base64 = await new Promise<string>((resolve) => {
         const reader = new FileReader();
@@ -179,6 +175,7 @@ const App: React.FC = () => {
       setAnalysis({ ...result, slides: finalSlides });
       setAppState({ status: 'reviewing', progress: 70 });
     } catch (error: any) {
+      console.error("Analysis Error:", error);
       setAppState({ status: 'error', progress: 0, error: error.message });
     }
   };
@@ -193,17 +190,11 @@ const App: React.FC = () => {
       const slidesWithAudio = [...analysis.slides];
       
       for (let i = 0; i < slidesWithAudio.length; i++) {
-        setLoadingMsg(`音声素材を生成中... (${i + 1}/${slidesWithAudio.length})`);
+        setLoadingMsg(`音声素材を生成中... (${i + 1}/${slidesWithAudio.length})\n(AIが混み合っている場合は自動でリトライします)`);
         try {
           slidesWithAudio[i].audioBuffer = await generateSpeechForText(slidesWithAudio[i].notes, audioCtx);
         } catch (err: any) {
-          if (err.message.includes("429") || err.message.includes("503")) {
-            for (let countdown = 10; countdown > 0; countdown--) {
-              setLoadingMsg(`モデル過負荷のため待機中... 残り ${countdown} 秒`);
-              await new Promise(r => setTimeout(r, 1000));
-            }
-            i--; continue;
-          }
+          // callWithRetry内でリトライが尽きた場合や致命的なエラーの場合
           throw err;
         }
         setAppState(prev => ({ ...prev, progress: Math.floor(((i + 1) / slidesWithAudio.length) * 50) }));
@@ -257,6 +248,7 @@ const App: React.FC = () => {
       setAppState({ status: 'completed', progress: 100 });
       audioCtx.close();
     } catch (error: any) {
+      console.error("Video Generation Error:", error);
       setAppState({ status: 'error', progress: 0, error: error.message });
     }
   };
@@ -304,7 +296,7 @@ const App: React.FC = () => {
             {['rendering', 'analyzing', 'audio_generating', 'video_recording'].includes(appState.status) ? (
               <div className="flex flex-col items-center py-12 text-center">
                 <div className="w-16 h-16 border-4 border-slate-800 border-t-cyan-500 rounded-full animate-spin mb-6"></div>
-                <p className="text-xl font-bold mb-4 text-white whitespace-pre-line">{loadingMsg}</p>
+                <p className="text-xl font-bold mb-4 text-white whitespace-pre-line leading-relaxed">{loadingMsg}</p>
                 <div className="w-full max-w-md bg-slate-800 h-2 rounded-full overflow-hidden">
                   <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${appState.progress}%` }}></div>
                 </div>
@@ -371,10 +363,14 @@ const App: React.FC = () => {
 
       {appState.status === 'error' && (
         <div className="fixed inset-0 bg-black/90 flex items-center justify-center p-6 z-50">
-          <div className="bg-slate-900 p-8 rounded-3xl border border-red-500/30 text-center max-w-md w-full">
+          <div className="bg-slate-900 p-8 rounded-3xl border border-red-500/30 text-center max-w-lg w-full">
             <h2 className="text-2xl font-black mb-4 text-white">エラーが発生しました</h2>
-            <p className="text-slate-400 mb-8 text-sm">{appState.error}</p>
-            <button onClick={() => window.location.reload()} className="w-full py-4 bg-red-600 text-white font-black rounded-xl">再試行する</button>
+            <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl mb-8">
+              <p className="text-red-400 text-sm break-words leading-relaxed">{appState.error}</p>
+            </div>
+            <button onClick={() => window.location.reload()} className="w-full py-4 bg-red-600 hover:bg-red-500 text-white font-black rounded-xl transition-colors">
+              もう一度やり直す
+            </button>
           </div>
         </div>
       )}

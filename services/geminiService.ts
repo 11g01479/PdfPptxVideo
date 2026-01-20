@@ -7,23 +7,38 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-// 指数バックオフ付きのリトライ関数
-const callWithRetry = async (fn: () => Promise<any>, maxRetries = 3): Promise<any> => {
+/**
+ * 指数バックオフ付きのリトライ関数
+ * 503 (Overloaded) や 429 (Rate Limit) などの一時的なエラーを自動でリトライします。
+ */
+const callWithRetry = async (fn: () => Promise<any>, maxRetries = 5): Promise<any> => {
   let delay = 2000;
   for (let i = 0; i < maxRetries; i++) {
     try {
-      return await fn();
+      const result = await fn();
+      if (!result) throw new Error("AIから空の応答が返されました。");
+      return result;
     } catch (error: any) {
-      const isOverloaded = error?.message?.includes("503") || error?.message?.includes("overloaded");
-      const isRateLimited = error?.message?.includes("429");
+      const errorMsg = error?.message || "";
+      const isOverloaded = errorMsg.includes("503") || errorMsg.toLowerCase().includes("overloaded") || errorMsg.includes("UNAVAILABLE");
+      const isRateLimited = errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota");
       
+      // 最後のリトライでなければ待機して継続
       if ((isOverloaded || isRateLimited) && i < maxRetries - 1) {
-        console.warn(`AI model busy. Retrying in ${delay}ms... (Attempt ${i + 1}/${maxRetries})`);
+        console.warn(`Gemini API Busy (${i + 1}/${maxRetries}): ${errorMsg}. Retrying in ${delay}ms...`);
+        // UI側でこの待機を検知できるようにするため、特定のフラグを持つエラーを投げ直すことも検討できますが、
+        // ここでは単純にawaitで待機します。
         await new Promise(r => setTimeout(r, delay));
-        delay *= 2; // 待ち時間を倍にする
+        delay *= 2; 
         continue;
       }
-      throw error;
+      
+      // 安全フィルターなどによるブロックの場合
+      if (errorMsg.includes("SAFETY")) {
+        throw new Error("コンテンツがAIの安全ポリシーによりブロックされました。内容を変更して試してください。");
+      }
+
+      throw new Error(`AI解析エラー: ${errorMsg || "不明なエラーが発生しました。"}`);
     }
   }
 };
@@ -74,7 +89,7 @@ export const generateSpeechForText = async (text: string, audioCtx: AudioContext
   }));
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("音声データの生成に失敗しました。");
+  if (!base64Audio) throw new Error("音声データの生成に失敗しました。AIの安全フィルターによって制限された可能性があります。");
 
   const audioBytes = decode(base64Audio);
   return await decodeAudioData(audioBytes, audioCtx, 24000, 1);
@@ -162,9 +177,15 @@ ${pageCount ? `【想定ページ数】: ${pageCount}ページ` : ''}
   }));
 
   const text = response.text;
-  if (!text) throw new Error("AI解析に失敗しました。");
+  if (!text) {
+    throw new Error("AIから有効なテキスト回答が得られませんでした。");
+  }
 
-  const result: AnalysisResult = JSON.parse(text);
-  result.slides.sort((a, b) => a.pageIndex - b.pageIndex);
-  return result;
+  try {
+    const result: AnalysisResult = JSON.parse(text);
+    result.slides.sort((a, b) => a.pageIndex - b.pageIndex);
+    return result;
+  } catch (e) {
+    throw new Error("AIの回答フォーマット（JSON）が不正です。もう一度お試しください。");
+  }
 };

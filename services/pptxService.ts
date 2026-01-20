@@ -2,11 +2,14 @@
 import pptxgen from "pptxgenjs";
 import { AnalysisResult } from "../types";
 
+/**
+ * 編集済みの解説内容を反映した新しいPowerPointファイルを作成・ダウンロードします。
+ */
 export const createPresentation = async (data: AnalysisResult): Promise<void> => {
   const pres = new pptxgen();
   pres.layout = 'LAYOUT_16x9';
 
-  // Title Slide
+  // タイトルスライドの作成
   const titleSlide = pres.addSlide();
   titleSlide.background = { color: "0F172A" };
   titleSlide.addText(data.presentationTitle, {
@@ -18,21 +21,27 @@ export const createPresentation = async (data: AnalysisResult): Promise<void> =>
     align: "center", fontSize: 16, color: "94A3B8"
   });
 
-  // Page-by-Page Slides
+  // 各ページスライドの作成
   data.slides.forEach((slide) => {
     const s = pres.addSlide();
     
-    // スライド画像が生成されている場合はそれを全面に配置
+    // スライド画像がある場合はそれを優先的に全面配置
     if (slide.imageUrl) {
-      // DataURL形式でも安全に扱えるように指定
-      s.addImage({
-        data: slide.imageUrl,
-        x: 0,
-        y: 0,
-        w: "100%",
-        h: "100%",
-        sizing: { type: 'contain', w: 10, h: 5.625 }
-      });
+      try {
+        s.addImage({
+          data: slide.imageUrl,
+          x: 0,
+          y: 0,
+          w: "100%",
+          h: "100%",
+          sizing: { type: 'contain', w: 10, h: 5.625 }
+        });
+      } catch (err) {
+        console.error("Failed to add image to slide:", err);
+        // 画像追加に失敗した場合は背景色で代用
+        s.background = { color: "1E293B" };
+        s.addText(`[Image missing: ${slide.title}]`, { x: 0, y: 2.5, w: "100%", align: "center", color: "FF0000" });
+      }
     } else {
       s.background = { color: "1E293B" };
       s.addText(slide.title, {
@@ -41,11 +50,14 @@ export const createPresentation = async (data: AnalysisResult): Promise<void> =>
       });
     }
 
-    // スピーカーノートにAI生成の解説を追加
+    // AIが生成した解説文を「ノート」として追加
+    // これにより、プレゼン資料としても即戦力になります。
     s.addNotes(slide.notes);
   });
 
-  // ファイル保存
+  // ファイル名のサニタイズ（OSで禁止されている文字を置換）
   const safeName = data.presentationTitle.replace(/[/\\?%*:|"<>]/g, '-');
-  await pres.writeFile({ fileName: `${safeName}.pptx` });
+  
+  // ファイルをブラウザでダウンロード
+  await pres.writeFile({ fileName: `${safeName}_ai_explanation.pptx` });
 };
