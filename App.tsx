@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { analyzePdfForPpt, generateSpeechForText } from './services/geminiService';
 import { createPresentation } from './services/pptxService';
@@ -8,14 +8,48 @@ import StepCard from './components/StepCard';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
 
+const DAILY_LIMIT = 3; // 1日の無料生成制限数
+
 const App: React.FC = () => {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [appState, setAppState] = useState<AppState>({ status: 'idle', progress: 0 });
   const [loadingMsg, setLoadingMsg] = useState("");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [remainingQuota, setRemainingQuota] = useState<number>(DAILY_LIMIT);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // クォータ（利用回数）の初期化とチェック
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const storedData = localStorage.getItem('pdf_video_quota');
+    
+    if (storedData) {
+      const { date, count } = JSON.parse(storedData);
+      if (date === today) {
+        setRemainingQuota(Math.max(0, DAILY_LIMIT - count));
+      } else {
+        // 日付が変わっていればリセット
+        localStorage.setItem('pdf_video_quota', JSON.stringify({ date: today, count: 0 }));
+        setRemainingQuota(DAILY_LIMIT);
+      }
+    } else {
+      localStorage.setItem('pdf_video_quota', JSON.stringify({ date: today, count: 0 }));
+      setRemainingQuota(DAILY_LIMIT);
+    }
+  }, []);
+
+  const useQuota = () => {
+    const today = new Date().toISOString().split('T')[0];
+    const storedData = localStorage.getItem('pdf_video_quota');
+    if (storedData) {
+      const { count } = JSON.parse(storedData);
+      const newCount = count + 1;
+      localStorage.setItem('pdf_video_quota', JSON.stringify({ date: today, count: newCount }));
+      setRemainingQuota(DAILY_LIMIT - newCount);
+    }
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -46,7 +80,7 @@ const App: React.FC = () => {
   };
 
   const startAnalysis = async () => {
-    if (!pdfFile) return;
+    if (!pdfFile || remainingQuota <= 0) return;
     try {
       setAppState({ status: 'rendering', progress: 10 });
       const { images, numPages } = await renderPdfToImages(pdfFile);
@@ -61,7 +95,6 @@ const App: React.FC = () => {
 
       const result = await analyzePdfForPpt(base64, numPages);
       
-      // AIの結果とPDFページを厳密にマッピング（1ページも漏らさない）
       const finalSlides: Slide[] = [];
       for (let i = 0; i < numPages; i++) {
         const aiSlide = result.slides.find(s => s.pageIndex === i);
@@ -86,46 +119,48 @@ const App: React.FC = () => {
     const dest = audioCtx.createMediaStreamDestination();
     
     try {
-      // --- ステップ1: 音声合成と画像の事前ロード ---
       setAppState({ status: 'audio_generating', progress: 0 });
       const preloadedImages: HTMLImageElement[] = [];
       const slidesWithAudio = [...analysis.slides];
       
       for (let i = 0; i < slidesWithAudio.length; i++) {
         setLoadingMsg(`素材を準備中... (${i + 1}/${slidesWithAudio.length})`);
-        
-        // 音声生成
         slidesWithAudio[i].audioBuffer = await generateSpeechForText(slidesWithAudio[i].notes, audioCtx);
         
-        // 画像プリロード
         const img = new Image();
         img.src = slidesWithAudio[i].imageUrl!;
-        await new Promise(r => img.onload = r);
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+        });
         preloadedImages.push(img);
         
         setAppState(prev => ({ ...prev, progress: Math.floor(((i + 1) / slidesWithAudio.length) * 50) }));
       }
 
-      // --- ステップ2: 動画録画の開始 ---
       setAppState({ status: 'video_recording', progress: 50 });
       const canvas = canvasRef.current!;
       canvas.width = 1280;
       canvas.height = 720;
       const ctx = canvas.getContext('2d')!;
       
-      // ストリームの設定
-      const stream = canvas.captureStream(30);
+      const stream = canvas.captureStream(30); 
       dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
       
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
+      const recorder = new MediaRecorder(stream, { 
+        mimeType: 'video/webm;codecs=vp9,opus',
+        videoBitsPerSecond: 2500000 
+      });
+      
       const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
       
       const recordingPromise = new Promise<Blob>((resolve) => {
         recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
       });
 
-      // 録画開始前の「初期描画」（ページ1を先に見せておく）
       const drawFrame = (img: HTMLImageElement) => {
         ctx.fillStyle = "#0f172a"; 
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -139,40 +174,46 @@ const App: React.FC = () => {
         drawFrame(preloadedImages[0]);
       }
 
-      // 録画開始
       recorder.start();
-      // レコーダーが開始するのをわずかに待つ
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 500));
+      if (preloadedImages.length > 0) drawFrame(preloadedImages[0]);
 
       for (let i = 0; i < slidesWithAudio.length; i++) {
         const slide = slidesWithAudio[i];
         const img = preloadedImages[i];
-        setLoadingMsg(`動画を構成中: ${i + 1}ページ目`);
+        setLoadingMsg(`動画をエンコード中: ${i + 1} / ${slidesWithAudio.length} ページ`);
         
-        // 描画
-        drawFrame(img);
-        
-        // 音声再生
+        const duration = slide.audioBuffer!.duration;
+        const startTime = Date.now();
+        const endTime = startTime + (duration * 1000) + 600; 
+
         const source = audioCtx.createBufferSource();
         source.buffer = slide.audioBuffer!;
         source.connect(dest);
         source.connect(audioCtx.destination);
-        
-        const duration = slide.audioBuffer!.duration;
         source.start();
-        
-        // 音声の長さ分だけ待機（少し余裕を持たせる）
-        await new Promise(r => setTimeout(r, duration * 1000 + 500)); 
+
+        while (Date.now() < endTime) {
+          drawFrame(img);
+          await new Promise(r => requestAnimationFrame(r));
+          await new Promise(r => setTimeout(r, 100)); 
+          const elapsed = Date.now() - startTime;
+          if (elapsed > (duration * 1000) + 600) break;
+        }
       }
 
+      await new Promise(r => setTimeout(r, 500));
       recorder.stop();
       const videoBlob = await recordingPromise;
+      
+      // 生成成功時に回数を消費
+      useQuota();
+      
       setVideoUrl(URL.createObjectURL(videoBlob));
       setAppState({ status: 'completed', progress: 100 });
-      
-      // AudioContextをクローズ
       audioCtx.close();
     } catch (error: any) {
+      console.error(error);
       setAppState({ status: 'error', progress: 0, error: error.message });
     }
   };
@@ -181,8 +222,14 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-slate-950 text-slate-100 pb-20">
       <div className="max-w-5xl mx-auto px-4 py-12">
         <header className="text-center mb-16 animate-in fade-in slide-in-from-top duration-700">
-          <div className="inline-block px-4 py-1 mb-4 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-bold uppercase tracking-widest">
-            Free AI Explainer Video Creator
+          <div className="flex flex-col items-center gap-4 mb-4">
+            <div className="inline-block px-4 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-bold uppercase tracking-widest">
+              Free AI Explainer Video Creator
+            </div>
+            <div className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-2xl border ${remainingQuota > 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'} font-bold text-sm shadow-xl`}>
+              <span className="w-2 h-2 rounded-full animate-pulse bg-current"></span>
+              本日の残り生成枠: {remainingQuota} / {DAILY_LIMIT} 回
+            </div>
           </div>
           <h1 className="text-6xl font-black mb-6 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-600 tracking-tight">
             PDF to Explainable Video
@@ -196,17 +243,26 @@ const App: React.FC = () => {
         <main className="space-y-6">
           <StepCard number={1} title="PDFをアップロード" active={appState.status === 'idle'} completed={!!pdfFile && appState.status !== 'idle'}>
             <div className="flex flex-col items-center">
-              <label className="w-full flex flex-col items-center py-12 bg-slate-800/20 rounded-3xl border-2 border-dashed border-slate-700 cursor-pointer hover:border-cyan-500 hover:bg-slate-800/40 transition-all group">
-                <div className="p-5 rounded-2xl bg-slate-900 mb-6 group-hover:scale-110 transition-all shadow-xl">
-                  <svg className="w-12 h-12 text-slate-400 group-hover:text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+              {remainingQuota <= 0 ? (
+                <div className="w-full p-8 bg-red-500/5 border border-red-500/20 rounded-3xl text-center">
+                  <p className="text-red-400 font-bold text-lg mb-2">本日の生成上限に達しました</p>
+                  <p className="text-slate-500 text-sm">明日またご利用いただくか、ブラウザを変えてお試しください。</p>
                 </div>
-                <span className="text-slate-300 font-bold text-lg">{pdfFile ? pdfFile.name : "ファイルを選択 (無料解析)"}</span>
-                <input type="file" className="hidden" accept=".pdf" onChange={handleFileUpload} />
-              </label>
-              {pdfFile && appState.status === 'idle' && (
-                <button onClick={startAnalysis} className="mt-8 px-12 py-5 bg-gradient-to-r from-cyan-600 to-blue-700 hover:from-cyan-500 hover:to-blue-600 text-white font-black rounded-2xl shadow-2xl transition-all transform hover:scale-105 text-lg">
-                  今すぐ無料解析を開始
-                </button>
+              ) : (
+                <>
+                  <label className="w-full flex flex-col items-center py-12 bg-slate-800/20 rounded-3xl border-2 border-dashed border-slate-700 cursor-pointer hover:border-cyan-500 hover:bg-slate-800/40 transition-all group">
+                    <div className="p-5 rounded-2xl bg-slate-900 mb-6 group-hover:scale-110 transition-all shadow-xl">
+                      <svg className="w-12 h-12 text-slate-400 group-hover:text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                    </div>
+                    <span className="text-slate-300 font-bold text-lg">{pdfFile ? pdfFile.name : "ファイルを選択 (無料解析)"}</span>
+                    <input type="file" className="hidden" accept=".pdf" onChange={handleFileUpload} />
+                  </label>
+                  {pdfFile && appState.status === 'idle' && (
+                    <button onClick={startAnalysis} className="mt-8 px-12 py-5 bg-gradient-to-r from-cyan-600 to-blue-700 hover:from-cyan-500 hover:to-blue-600 text-white font-black rounded-2xl shadow-2xl transition-all transform hover:scale-105 text-lg">
+                      今すぐ無料解析を開始
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </StepCard>
@@ -247,7 +303,7 @@ const App: React.FC = () => {
                 <div className="flex flex-wrap justify-center gap-6 pt-6">
                   <button onClick={createVideo} className="px-10 py-5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black rounded-2xl shadow-2xl transition-all transform hover:scale-105 active:scale-95 flex items-center gap-3">
                     <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" /></svg>
-                    音声付き動画を生成 (無料)
+                    音声付き動画を生成 (残り{remainingQuota}回)
                   </button>
                   <button onClick={() => createPresentation(analysis)} className="px-10 py-5 bg-slate-100 text-slate-950 hover:bg-white font-black rounded-2xl shadow-2xl transition-all transform hover:scale-105 active:scale-95 flex items-center gap-3">
                     <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A1 1 0 0111.293 2.707l3 3a1 1 0 01.293.707V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
