@@ -3,7 +3,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { analyzeDocument, generateSpeechForText } from './services/geminiService';
 import { createPresentation } from './services/pptxService';
-import { extractTextFromPptx, PptxContent } from './services/pptxParser';
 import { AnalysisResult, AppState, Slide } from './types';
 import StepCard from './components/StepCard';
 
@@ -85,75 +84,18 @@ const App: React.FC = () => {
     return images;
   };
 
-  const createSlideImagesFromPptx = async (content: PptxContent): Promise<string[]> => {
-    const images: string[] = [];
-    const canvas = document.createElement('canvas');
-    canvas.width = 1280;
-    canvas.height = 720;
-    const ctx = canvas.getContext('2d')!;
-
-    for (const slide of content.slides) {
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      if (slide.image) {
-        await new Promise((resolve) => {
-          const img = new Image();
-          img.onload = () => {
-            const ratio = Math.min(canvas.width / img.width, canvas.height / img.height);
-            const nw = img.width * ratio, nh = img.height * ratio;
-            ctx.drawImage(img, (canvas.width - nw) / 2, (canvas.height - nh) / 2, nw, nh);
-            resolve(null);
-          };
-          img.onerror = () => resolve(null);
-          img.src = slide.image!;
-        });
-      }
-
-      if (!slide.image) {
-        ctx.fillStyle = '#f8fafc';
-        ctx.font = 'bold 50px sans-serif';
-        ctx.textAlign = 'center';
-        const title = slide.text.split('\n')[0] || `Slide ${slide.index + 1}`;
-        ctx.fillText(title.slice(0, 30), canvas.width / 2, 180);
-
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = '28px sans-serif';
-        const lines = slide.text.match(/.{1,50}/g) || [];
-        lines.slice(0, 8).forEach((line, i) => {
-          ctx.fillText(line, canvas.width / 2, 280 + (i * 40));
-        });
-      } else {
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
-        ctx.fillRect(0, 0, canvas.width, 60);
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 24px sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(`Slide ${slide.index + 1}`, 30, 40);
-      }
-
-      images.push(canvas.toDataURL('image/jpeg', 0.8));
-    }
-    return images;
-  };
-
   const startAnalysis = async () => {
     if (!file || remainingQuota <= 0) return;
     try {
       setAppState({ status: 'rendering', progress: 10 });
       let images: string[] = [];
       let pageCount = 0;
-      let pptxContent: PptxContent | undefined;
 
       if (file.type === 'application/pdf') {
         images = await renderPdfToImages(file);
         pageCount = images.length;
-      } else if (file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') {
-        setLoadingMsg("PowerPointから画像とテキストを抽出中...");
-        pptxContent = await extractTextFromPptx(file);
-        pageCount = pptxContent.slides.length;
-        setLoadingMsg("スライド画像を再構成中...");
-        images = await createSlideImagesFromPptx(pptxContent);
+      } else {
+        throw new Error("PDFファイルのみ対応しています。");
       }
 
       setAppState({ status: 'analyzing', progress: 40 });
@@ -165,7 +107,7 @@ const App: React.FC = () => {
         reader.readAsDataURL(file);
       });
 
-      const result = await analyzeDocument(base64, file.type, pageCount || undefined, pptxContent);
+      const result = await analyzeDocument(base64, file.type, pageCount || undefined);
       
       const finalSlides = result.slides.map((s, i) => ({
         ...s,
@@ -205,23 +147,52 @@ const App: React.FC = () => {
       const canvas = canvasRef.current!;
       canvas.width = 1280; canvas.height = 720;
       const ctx = canvas.getContext('2d')!;
+
+      // 画像のプリロード
+      const preloadedImages: (HTMLImageElement | null)[] = await Promise.all(
+        slidesWithAudio.map(slide => {
+          if (!slide.imageUrl) return Promise.resolve(null);
+          return new Promise<HTMLImageElement>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => resolve(null as any);
+            img.src = slide.imageUrl!;
+          });
+        })
+      );
+
       const stream = canvas.captureStream(30); 
       dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
+      
+      // サポートされているMIMEタイプを選択
+      const mimeTypes = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4'
+      ];
+      const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+      
+      const recorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
       const chunks: Blob[] = [];
       recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
-      const recordingPromise = new Promise<Blob>((resolve) => recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' })));
+      const recordingPromise = new Promise<Blob>((resolve) => recorder.onstop = () => resolve(new Blob(chunks, { type: selectedMimeType || 'video/webm' })));
 
-      const drawFrame = (slide: Slide) => {
+      const drawFrame = (slideIdx: number) => {
         ctx.fillStyle = "#0f172a"; 
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        if (slide.imageUrl) {
-          const img = new Image();
-          img.src = slide.imageUrl;
+        const img = preloadedImages[slideIdx];
+        if (img) {
           const ratio = Math.min(canvas.width / img.width, canvas.height / img.height);
           const nw = img.width * ratio, nh = img.height * ratio;
           ctx.drawImage(img, (canvas.width - nw) / 2, (canvas.height - nh) / 2, nw, nh);
+        } else {
+          // 画像がない場合のフォールバック表示
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 40px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(slidesWithAudio[slideIdx].title, canvas.width / 2, canvas.height / 2);
         }
       };
 
@@ -230,15 +201,16 @@ const App: React.FC = () => {
         const slide = slidesWithAudio[i];
         setLoadingMsg(`動画エンコード中: ${i + 1} / ${slidesWithAudio.length} スライド`);
         const duration = slide.audioBuffer!.duration;
-        const endTime = Date.now() + (duration * 1000) + 300;
+        const endTime = Date.now() + (duration * 1000) + 500; // 少し余裕を持たせる
         
         const source = audioCtx.createBufferSource();
         source.buffer = slide.audioBuffer!;
-        source.connect(dest); source.connect(audioCtx.destination);
+        source.connect(dest); 
+        source.connect(audioCtx.destination);
         source.start();
 
         while (Date.now() < endTime) {
-          drawFrame(slide);
+          drawFrame(i);
           await new Promise(r => requestAnimationFrame(r));
         }
       }
@@ -267,23 +239,23 @@ const App: React.FC = () => {
             </div>
           </div>
           <h1 className="text-5xl md:text-6xl font-black mb-6 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-600 tracking-tight">
-            PDF & PPT to Video
+            PDF to Video
           </h1>
           <p className="text-slate-400 text-lg max-w-2xl mx-auto leading-relaxed">
-            ファイルをアップロードしてAIが解説を生成。<br />
+            PDFをアップロードしてAIが解説を生成。<br />
             解説文は自由に編集でき、最後に音声付きの動画を作成します。
           </p>
         </header>
 
         <main className="space-y-6">
-          <StepCard number={1} title="ファイルをアップロード" active={appState.status === 'idle'} completed={!!file && appState.status !== 'idle'}>
+          <StepCard number={1} title="PDFをアップロード" active={appState.status === 'idle'} completed={!!file && appState.status !== 'idle'}>
             <div className="flex flex-col items-center">
               <label className="w-full flex flex-col items-center py-12 bg-slate-800/20 rounded-3xl border-2 border-dashed border-slate-700 cursor-pointer hover:border-cyan-500 hover:bg-slate-800/40 transition-all group overflow-hidden relative">
                 <div className="p-5 rounded-2xl bg-slate-900 mb-4 group-hover:scale-110 transition-all z-10">
                   <svg className="w-12 h-12 text-slate-400 group-hover:text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
                 </div>
-                <span className="text-slate-300 font-bold text-lg z-10">{file ? file.name : "PDFまたはPowerPointを選択"}</span>
-                <input type="file" className="hidden" accept=".pdf,.pptx" onChange={handleFileUpload} />
+                <span className="text-slate-300 font-bold text-lg z-10">{file ? file.name : "PDFファイルを選択"}</span>
+                <input type="file" className="hidden" accept=".pdf" onChange={handleFileUpload} />
               </label>
               <p className="mt-4 text-xs text-slate-500">※Gemini APIの無料枠制限により、スライド数が多いと生成に失敗する場合があります。</p>
               {file && appState.status === 'idle' && (

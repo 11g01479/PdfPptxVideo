@@ -1,10 +1,9 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { AnalysisResult, ModelName } from "../types";
-import { PptxContent } from "./pptxParser";
 
 const getAIClient = () => {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 };
 
 /**
@@ -110,8 +109,7 @@ export const generateSpeechForText = async (text: string, audioCtx: AudioContext
 export const analyzeDocument = async (
   base64Data: string, 
   mimeType: string, 
-  pageCount?: number,
-  pptxContent?: PptxContent
+  pageCount?: number
 ): Promise<AnalysisResult> => {
   const ai = getAIClient();
   
@@ -127,12 +125,7 @@ export const analyzeDocument = async (
     };
     systemContext = "このPDFドキュメントを詳細に分析してください。";
   } else {
-    const pptxText = pptxContent?.slides.map(s => 
-      `Slide ${s.index + 1}:\n[Text on Slide]: ${s.text}\n[Original Speaker Notes]: ${s.notes}`
-    ).join('\n\n---\n\n');
-    
-    contentPart = { text: `以下はPowerPointファイルから抽出された内容です：\n\n${pptxText}` };
-    systemContext = "提供されたPowerPointのテキストと既存のノートを元に、より自然で分かりやすい解説動画用スクリプトを作成してください。";
+    throw new Error("PDFファイルのみ対応しています。");
   }
 
   const prompt = `
