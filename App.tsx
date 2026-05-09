@@ -201,15 +201,20 @@ const App: React.FC = () => {
         const slide = slidesWithAudio[i];
         setLoadingMsg(`動画エンコード中: ${i + 1} / ${slidesWithAudio.length} スライド`);
         const duration = slide.audioBuffer!.duration;
-        const endTime = Date.now() + (duration * 1000) + 500; // 少し余裕を持たせる
         
         const source = audioCtx.createBufferSource();
         source.buffer = slide.audioBuffer!;
         source.connect(dest); 
         source.connect(audioCtx.destination);
+        
+        let isAudioPlaying = true;
+        source.onended = () => {
+          isAudioPlaying = false;
+        };
+        
         source.start();
 
-        while (Date.now() < endTime) {
+        while (isAudioPlaying) {
           drawFrame(i);
           await new Promise(r => requestAnimationFrame(r));
         }
